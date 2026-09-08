@@ -1,6 +1,6 @@
 # Minimal Subagent design
 
-Status: proposed implementation contract, not an implemented API.
+Status: original design baseline, now partially implemented in experimental 0.1. The [API reference](api.md) is the authoritative description of shipped behavior and limits. In particular, 0.1 does not implement crash recovery or historical status import; non-TUI spawn blocks instead of detaching.
 
 ## Purpose
 
@@ -97,25 +97,28 @@ An optional public control/discovery interface can let a future panel inspect an
 
 ### Milestone A: execution kernel
 
-- [ ] Explicit resources, cwd, tools, model, and fresh history.
-- [ ] Multi-block final output and terminal-reason classification.
-- [ ] Preserve errors and partial reports; reject missing or truncated final completion.
-- [ ] Abort before start, during creation, during model streaming, and during tool execution.
-- [ ] Cleanup and subscription detachment on every exit path.
+- [x] Explicit resources, cwd, tools, model, and fresh history.
+- [x] Multi-block final output and terminal-reason classification.
+- [x] Preserve errors and partial reports; reject missing or truncated final completion.
+- [x] Abort before start, during creation, during model streaming, and during a real shell tool.
+- [x] Cleanup on tested success, failure, and cancellation paths; listeners detached in the executor's finally block.
+- [ ] Real-provider smoke tests and broader long-running resource-leak testing.
 
 ### Milestone B: run supervisor
 
-- [ ] Concurrent readers, bounded queue, and deterministic capacity behavior.
-- [ ] Writer conflicts, path aliases, queued cancellation, timeout races, and shutdown.
-- [ ] Stable run IDs, bounded snapshots, private artifacts, retention, interrupted recovery.
-- [ ] Observer exceptions do not alter runs.
+- [x] Concurrent readers, bounded queue, and deterministic capacity behavior.
+- [x] Checkout-root writer conflicts, symlink aliases, separate worktrees, queued cancellation, timeout settlement, and shutdown.
+- [x] Stable run IDs, bounded snapshots, private artifacts, and closed-store retention.
+- [ ] Cross-process writer coordination and interrupted recovery (deferred; not claimed by 0.1).
+- [x] Observer exceptions do not alter runs.
 
 ### Milestone C: Pi integration
 
-- [ ] Tool registration, runtime input validation, host capability ceilings, provider handling.
-- [ ] Correct-parent notification and notification-failure reporting.
-- [ ] Safe reload, session replacement, and supported headless behavior.
-- [ ] One short English Skill matching only implemented APIs.
-- [ ] Independent package installation with no sibling plugin dependency.
+- [x] Tool registration, runtime input validation, native host tool ceilings, and a public provider/auth bridge tested with fixtures.
+- [x] Parent-owned TUI completion messages, observer ownership checks, and visible notification status.
+- [x] Shutdown/reload-handler cancellation with notification suppression; headless spawn waits for settlement.
+- [ ] Full interactive session replacement and terminal smoke tests (the shutdown path is covered, not every host UI transition).
+- [x] One short English Skill matching implemented APIs.
+- [x] Packed plugin loads through Pi without sibling packages or local node_modules.
 
 Dedicated UI, todo/update_plan, live steering, retained-session resume, and forked context remain later work. No capability is complete merely because its SDK primitive passed the research experiment.

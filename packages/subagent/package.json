@@ -1,0 +1,25 @@
+{
+  "name": "@fyzafh/pi-subagent",
+  "version": "0.1.0",
+  "description": "Minimal generic delegation for Pi with independent child sessions",
+  "type": "module",
+  "keywords": ["pi-package"],
+  "repository": { "type": "git", "url": "https://github.com/FYZAFH/pi-plugins.git", "directory": "packages/subagent" },
+  "files": ["src", "skills", "README.md", "docs/api.md"],
+  "exports": { ".": "./src/index.ts", "./protocol": "./src/protocol.ts" },
+  "pi": { "extensions": ["./src/index.ts"], "skills": ["./skills"] },
+  "scripts": { "test": "PI_OFFLINE=1 node --experimental-strip-types --test test/*.test.ts" },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-agent-core": "*",
+    "typebox": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": { "optional": true },
+    "@earendil-works/pi-ai": { "optional": true },
+    "@earendil-works/pi-agent-core": { "optional": true },
+    "typebox": { "optional": true }
+  },
+  "engines": { "node": ">=22.18.0" }
+}

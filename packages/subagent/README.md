@@ -1,45 +1,70 @@
-# Subagent
+# Pi Subagent
 
-状态：已完成第一轮 SDK 调研与离线可行性验证，尚无可安装插件。
+A small, generic delegation extension for Pi. One tool, one Skill, no role catalog or workflow engine.
 
-## 设计与验证
+**Status:** experimental 0.1 implementation. Offline SDK and extension integration tests pass against Pi 0.85.1. Real-provider and interactive terminal smoke tests are still required before treating it as production-ready. Not published to npm.
 
-- [调研结论与来源](docs/research.md)
-- [最小设计与验收清单](docs/design.md)
-- [通用委派指南草案](docs/delegation-guide.md)
-- [可运行的离线 SDK 实验](experiments/README.md)
+## Install from a checkout
 
-所有面向模型的提示词与指南使用英文。
+```bash
+git clone https://github.com/FYZAFH/pi-plugins.git
+cd pi-plugins
+pi install ./packages/subagent
+```
 
-## 目标
+Or try it for one session without changing installed packages:
 
-提供一个通用、轻量的 Pi 子 Agent 执行扩展，以及一份说明如何委派任务的通用 Skill。任务职责由每次调用定义，不维护预设角色库。
+```bash
+pi -e ./packages/subagent/src/index.ts --skill ./packages/subagent/skills/subagent/SKILL.md
+```
 
-## 目标能力
+Install the plugin directory, **not the monorepo root**. The host Pi supplies the SDK and schema dependencies. No other plugin in this repository is required. Do not enable this together with another extension registering a `subagent` tool, such as `pi-subagents`.
 
-- 启动子任务，显式配置任务、工作目录、上下文和工具权限。
-- 查询状态、返回结果、取消任务、报告错误。
-- 并行执行与并发限制。
-- 基本运行记录和完成通知。
-- 为未来的监控面板提供公开状态与事件接口。
+## Use
 
-## 初始默认策略（待 SDK 验证）
+Ask naturally:
 
-- 独立上下文，写权限显式授予。
-- 默认禁止子 Agent 继续派生。
-- 同一工作目录最多一个写入者；并行写入需要显式隔离。
-- 子任务遇到超出授权的决定时报告阻塞。
-- 子任务的完成报告必须说明验证情况与未完成项。
-- 执行失败不静默切换执行方式。
+```text
+Delegate a read-only inspection of the authentication flow. Return the relevant files and concrete risks.
+```
 
-## 当前不包含
+Or load `/skill:subagent` for the generic delegation guide.
 
-- todo、update_plan 或 Plan Mode。
-- spec、plan、review cycle 等业务流程。
-- 预设角色、多顾问讨论或自动模型路由。
-- 专用监控面板（后续目标）。
-- 跨 CLI 执行器、定时任务和复杂工作流引擎。
+- `subagent`: spawn, inspect, wait for, and cancel tasks.
+- `/subagents [run-id]`: inspect run state.
+- `/subagent-stop <run-id>`: cancel a task.
 
-## 下一步
+In the TUI, child runs return a run ID and notify the parent when complete. Outside the TUI, spawn waits for completion. Children run in the parent process; they do not survive Pi exit.
 
-依据设计中的里程碑 A 实现并测试最小执行内核，再依次接入运行管理与 Pi 工具适配。SDK 实验通过不代表整个插件已经完成；真实模型、父会话通知、关闭竞态与发布安装仍需验证。
+## Defaults
+
+- Fresh conversation history; relevant context must be included in the handoff.
+- Read-only native host tools; mutation tools require explicit selection.
+- Parent model/provider and thinking level, without copying credentials to disk.
+- No child extensions, Skills, ambient project instructions, nested delegation tool, or automatic model fallback.
+- Four concurrent runs, sixteen queued runs, and sixty-four accepted runs per parent runtime.
+- Checkout-aware writer coordination and a conservative parent built-in mutation barrier.
+- Private, bounded reports/logs and optional state-change events for future panels.
+
+Tool allowlists and working directories are **not an OS sandbox**. Parent hook-based permission policies are not inherited. Cancellation is cooperative and does not roll back edits. Runtime completion is not acceptance. See [API and limitations](docs/api.md) before enabling write access.
+
+## Development
+
+From the repository root:
+
+```bash
+npm ci --ignore-scripts
+npm run typecheck
+npm test
+```
+
+Tests use offline fixture providers, not real model credentials. All model-facing prompts are English.
+
+## Design history
+
+- [Research and evidence](https://github.com/FYZAFH/pi-plugins/blob/main/packages/subagent/docs/research.md)
+- [Design and milestone status](https://github.com/FYZAFH/pi-plugins/blob/main/packages/subagent/docs/design.md)
+- [Generic delegation Skill](skills/subagent/SKILL.md)
+- [Initial standalone SDK experiment](https://github.com/FYZAFH/pi-plugins/blob/main/packages/subagent/experiments/README.md)
+
+Future work includes a dedicated panel, retained-session continuation, and stronger isolation if needed. Planning tools (`todo` / `update_plan`) and delivery workflows remain separate plugins or Skills.
