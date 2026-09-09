@@ -1,39 +1,44 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { Type } from "typebox";
 import { createAgentSession, createEventBus, DefaultResourceLoader, SessionManager, SettingsManager, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerSubagent } from "../src/index.ts";
-import { CHANGED_EVENT, REQUEST_EVENT, type RunSnapshot } from "../src/protocol.ts";
+import { CHANGED_EVENT, REQUEST_EVENT, PROFILE_DISCOVERY_EVENT, type ProfileDiscoveryRequest, type RunSnapshot } from "../src/protocol.ts";
 import type { ExecutionResult, Executor } from "../src/executor.ts";
 import { fixture, MemoryStore, message, type Respond } from "./helpers.ts";
 
 async function parent(t: test.TestContext, respond: Respond, options: {
   mode?: "tui" | "print";
   tools?: string[];
+  trusted?: boolean;
+  subdirectory?: string;
   executor?: Executor;
   extra?: (pi: ExtensionAPI) => void;
 } = {}) {
   const root = await mkdtemp(join(tmpdir(), "subagent-integration-"));
+  const cwd = options.subdirectory ? join(root, options.subdirectory) : root;
+  await mkdir(cwd, { recursive: true });
   const { runtime, model } = await fixture(respond);
   const store = new MemoryStore();
   const events = createEventBus();
   const errors: string[] = [];
   const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } });
+  settingsManager.setProjectTrusted(options.trusted ?? true);
   const loader = new DefaultResourceLoader({
-    cwd: root, agentDir: root, settingsManager,
+    cwd, agentDir: root, settingsManager,
     noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
     eventBus: events,
     systemPrompt: "PARENT_ONLY_SENTINEL. Delegate the requested fixture task.",
-    extensionFactories: [(pi) => { registerSubagent(pi, { store: () => store, executor: options.executor }); options.extra?.(pi); }],
+    extensionFactories: [(pi) => { registerSubagent(pi, { store: () => store, executor: options.executor, agentDir: root }); options.extra?.(pi); }],
   });
   await loader.reload();
   const { session } = await createAgentSession({
-    cwd: root, agentDir: root, modelRuntime: runtime, model,
+    cwd, agentDir: root, modelRuntime: runtime, model,
     tools: options.tools ?? ["read", "write", "bash", "subagent"],
-    resourceLoader: loader, settingsManager, sessionManager: SessionManager.inMemory(root),
+    resourceLoader: loader, settingsManager, sessionManager: SessionManager.inMemory(cwd),
   });
   await session.bindExtensions({ mode: options.mode ?? "print", onError: (error) => errors.push(String(error.error)) });
   t.after(async () => {
@@ -198,4 +203,129 @@ test("failed TUI message delivery preserves the completed result and reports not
   await failed.promise;
   assert.equal(store.snapshots.get(run.id)?.state, "completed");
   assert.equal(store.outputs.get(run.id), "Retained evidence.");
+});
+
+const profileText = (tools = "read", instructions = "SPECIALIZED_REVIEW_INSTRUCTIONS") => `---\nname: reviewer\ndescription: Inspect a bounded task.\ntools: ${tools}\n---\n${instructions}\n`;
+async function saveProfile(root: string, directory: string, text = profileText()) {
+  await mkdir(join(root, directory), { recursive: true });
+  await writeFile(join(root, directory, "reviewer.md"), text);
+}
+function delegateWithProfile(args: Record<string, unknown> = {}): Respond {
+  return (model, context) => context.messages.some((msg) => msg.role === "toolResult")
+    ? message(model, [{ type: "text", text: "Profile request handled." }])
+    : message(model, [request({ action: "spawn", profile: "reviewer", task: childTask, ...args })], "toolUse");
+}
+
+test("a named profile reaches a real child as instructions and records its identity", async (t) => {
+  let inspected = false;
+  const { session, root, store } = await parent(t, (model, context, options) => {
+    if (latestUser(context).includes(childTask)) {
+      inspected = true;
+      assert.match(context.systemPrompt!, /SPECIALIZED_REVIEW_INSTRUCTIONS/);
+      assert.match(context.systemPrompt!, /parent owns final acceptance/);
+      assert.deepEqual(context.tools?.map((tool) => tool.name), ["read"]);
+      return message(model, [{ type: "text", text: "Specialized evidence." }]);
+    }
+    return delegateWithProfile({ tools: ["read"] })(model, context, options);
+  });
+  await saveProfile(root, "subagent-profiles", profileText("read, write"));
+  await session.prompt("Use the reviewer profile.");
+  const run = [...store.snapshots.values()][0];
+  assert.equal(inspected, true);
+  assert.equal(run.profile?.name, "reviewer");
+  assert.equal(run.profile?.scope, "user");
+  assert.match(run.profile!.sha256, /^[a-f0-9]{64}$/);
+  assert.equal(run.label, "reviewer");
+});
+
+test("profile listing is metadata-only and does not create a run", async (t) => {
+  const { session, root, store } = await parent(t, (model, context) => context.messages.some((msg) => msg.role === "toolResult")
+    ? message(model, [{ type: "text", text: "Profiles listed." }])
+    : message(model, [request({ action: "profiles" })], "toolUse"));
+  await saveProfile(root, "subagent-profiles");
+  await session.prompt("List available profiles.");
+  const output = session.messages.find((msg) => msg.role === "toolResult");
+  assert.match(JSON.stringify(output), /reviewer/);
+  assert.ok(!JSON.stringify(output).includes("SPECIALIZED_REVIEW_INSTRUCTIONS"));
+  assert.equal(store.snapshots.size, 0);
+});
+
+test("project profiles are loaded only from the trusted parent, not from the child cwd", async (t) => {
+  for (const trusted of [true, false]) {
+    let instructions: string | undefined;
+    const { session, root } = await parent(t, delegateWithProfile({ cwd: "other" }), {
+      trusted, executor: async (input) => { instructions = input.instructions; return { output: "done" }; },
+    });
+    await saveProfile(root, "subagent-profiles", profileText("read", "USER_PROFILE"));
+    await saveProfile(root, ".pi/subagent-profiles", profileText("read", "PROJECT_PROFILE"));
+    await saveProfile(root, "other/.pi/subagent-profiles", profileText("read", "CHILD_CWD_PROFILE"));
+    await session.prompt("Resolve a profile within the parent's trust scope.");
+    assert.equal(instructions, trusted ? "PROJECT_PROFILE" : "USER_PROFILE");
+  }
+});
+
+test("trusting a nested cwd does not import an ancestor checkout's profiles", async (t) => {
+  let instructions: string | undefined;
+  const { session, root } = await parent(t, delegateWithProfile(), {
+    subdirectory: "nested", trusted: true,
+    executor: async (input) => { instructions = input.instructions; return { output: "done" }; },
+  });
+  await mkdir(join(root, ".git"));
+  await saveProfile(root, "subagent-profiles", profileText("read", "USER_PROFILE"));
+  await saveProfile(root, ".pi/subagent-profiles", profileText("write", "ANCESTOR_PROFILE"));
+  await session.prompt("Resolve only within the current trust boundary.");
+  assert.equal(instructions, "USER_PROFILE");
+});
+
+test("profile tool defaults never bypass profile or host ceilings", async (t) => {
+  for (const hostDenial of [false, true]) {
+    const { session, root, store } = await parent(t, delegateWithProfile(hostDenial ? {} : { tools: ["write"] }), {
+      tools: ["read", "subagent"], executor: async () => { throw new Error("must not launch"); },
+    });
+    await saveProfile(root, "subagent-profiles", profileText(hostDenial ? "write" : "read"));
+    await session.prompt("Attempt to exceed an authority boundary.");
+    const output = session.messages.find((msg) => msg.role === "toolResult");
+    assert.ok(output?.role === "toolResult" && output.isError);
+    assert.match(JSON.stringify(output), hostDenial ? /unavailable/ : /tool ceiling/);
+    assert.equal(store.snapshots.size, 0);
+  }
+});
+
+test("profile-provided writers cannot race a sibling parent mutation", async (t) => {
+  const { session, root, store } = await parent(t, (model, context) => context.messages.some((msg) => msg.role === "toolResult")
+    ? message(model, [{ type: "text", text: "Profile launch rejected." }])
+    : message(model, [request({ action: "spawn", profile: "reviewer", task: childTask }),
+      { type: "toolCall", id: "profile-sibling-write", name: "write", arguments: { path: "parent.txt", content: "parent" } }], "toolUse"), {
+    executor: async () => { throw new Error("must not launch"); },
+  });
+  await saveProfile(root, "subagent-profiles", profileText("write"));
+  await session.prompt("Check a profile launch against the same-batch write barrier.");
+  const output = session.messages.find((msg) => msg.role === "toolResult");
+  assert.ok(output?.role === "toolResult" && output.isError);
+  assert.match(JSON.stringify(output), /same tool batch/);
+  assert.equal(store.snapshots.size, 0);
+});
+
+test("other plugins can optionally contribute profile directories without importing this plugin", async (t) => {
+  let directory = "";
+  let instructions: string | undefined;
+  let captured: ProfileDiscoveryRequest | undefined;
+  const { session, root, events } = await parent(t, delegateWithProfile(), {
+    extra(pi) {
+      pi.events.on(PROFILE_DISCOVERY_EVENT, (value) => {
+        const request = value as ProfileDiscoveryRequest;
+        captured = request;
+        request.addDirectory(directory);
+      });
+    },
+    executor: async (input) => { instructions = input.instructions; return { output: "done" }; },
+  });
+  directory = join(root, "package-profiles");
+  await saveProfile(root, "package-profiles");
+  await session.prompt("Use an extension-supplied profile.");
+  assert.equal(instructions, "SPECIALIZED_REVIEW_INSTRUCTIONS");
+  assert.equal(captured?.parentSessionId, session.sessionId);
+  // A retained asynchronous callback is ignored after discovery has finished.
+  captured?.addDirectory("not-an-absolute-path");
+  events.emit(PROFILE_DISCOVERY_EVENT, { version: 1, parentSessionId: session.sessionId, addDirectory() {} });
 });

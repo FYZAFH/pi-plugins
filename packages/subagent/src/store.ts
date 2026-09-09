@@ -5,7 +5,7 @@ import { boundedText } from "./policy.ts";
 import type { RunSnapshot } from "./protocol.ts";
 
 export interface RunStore {
-  create(id: string, task: string): string;
+  create(id: string, task: string, instructions?: string): string;
   save(snapshot: RunSnapshot): void;
   output(id: string, text: string): { truncated: boolean };
   log(id: string, event: unknown): void;
@@ -47,10 +47,11 @@ export class FileRunStore implements RunStore {
     }
   }
 
-  create(id: string, task: string): string {
+  create(id: string, task: string, instructions?: string): string {
     const directory = join(this.directory, id);
     mkdirSync(directory, { mode: 0o700 });
     this.atomic(join(directory, "task.txt"), task);
+    if (instructions !== undefined) this.atomic(join(directory, "instructions.txt"), instructions);
     return directory;
   }
 

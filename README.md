@@ -6,7 +6,7 @@
 
 | 目录 | 用途 | 状态 |
 | --- | --- | --- |
-| [`packages/subagent`](packages/subagent) | 通用子 Agent 委派与执行 | 实验版 0.1，可从本地目录安装 |
+| [`packages/subagent`](packages/subagent) | 通用子 Agent 委派与执行 | 实验版 0.2，支持可选 Agent Profile，可独立安装 |
 
 ## 当前方向
 

@@ -1,11 +1,11 @@
 {
   "name": "@fyzafh/pi-subagent",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Minimal generic delegation for Pi with independent child sessions",
   "type": "module",
   "keywords": ["pi-package"],
   "repository": { "type": "git", "url": "https://github.com/FYZAFH/pi-plugins.git", "directory": "packages/subagent" },
-  "files": ["src", "skills", "README.md", "docs/api.md"],
+  "files": ["src", "skills", "README.md", "docs/api.md", "docs/profiles.md"],
   "exports": { ".": "./src/index.ts", "./protocol": "./src/protocol.ts" },
   "pi": { "extensions": ["./src/index.ts"], "skills": ["./skills"] },
   "scripts": { "test": "PI_OFFLINE=1 node --experimental-strip-types --test test/*.test.ts" },

@@ -1,8 +1,8 @@
 # Pi Subagent
 
-A small, generic delegation extension for Pi. One tool, one Skill, no role catalog or workflow engine.
+A small, generic delegation extension for Pi. One tool, one Skill, no bundled roles or workflow engine.
 
-**Status:** experimental 0.1 implementation. Offline SDK and extension integration tests pass against Pi 0.85.1. Real-provider and interactive terminal smoke tests are still required before treating it as production-ready. Not published to npm.
+**Status:** experimental 0.2 implementation. Offline SDK and extension integration tests pass against Pi 0.85.1. Real-provider and interactive terminal smoke tests are still required before treating it as production-ready. Not published to npm.
 
 ## Install from a checkout
 
@@ -30,11 +30,23 @@ Delegate a read-only inspection of the authentication flow. Return the relevant 
 
 Or load `/skill:subagent` for the generic delegation guide.
 
-- `subagent`: spawn, inspect, wait for, and cancel tasks.
+- `subagent`: spawn, inspect, wait for, and cancel tasks; discover optional profiles.
+- `/subagent-profiles [name]`: list or inspect reusable Agent Profiles.
 - `/subagents [run-id]`: inspect run state.
 - `/subagent-stop <run-id>`: cancel a task.
 
 In the TUI, child runs return a run ID and notify the parent when complete. Outside the TUI, spawn waits for completion. Children run in the parent process; they do not survive Pi exit.
+
+## Specialized agents without a role library
+
+Add Markdown profiles to `~/.pi/agent/subagent-profiles/` or a trusted project's `.pi/subagent-profiles/`. Each file defines a name, description, tool ceiling, and English instructions. Other plugins can optionally contribute profile directories too.
+
+```javascript
+subagent({ action: "profiles" })
+subagent({ action: "spawn", profile: "security-reviewer", task: "Review src/auth for authorization regressions." })
+```
+
+Create the named profile first; none are bundled. Calls may narrow a profile's tools but cannot widen them or exceed the parent's active native tools. See [Profile authoring and optional integration](docs/profiles.md).
 
 ## Defaults
 

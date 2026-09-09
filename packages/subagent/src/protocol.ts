@@ -2,6 +2,21 @@
 export const PROTOCOL_VERSION = 1;
 export const CHANGED_EVENT = "pi-plugins:subagent:changed";
 export const REQUEST_EVENT = "pi-plugins:subagent:request";
+export const PROFILE_DISCOVERY_EVENT = "pi-plugins:subagent:profile-sources";
+
+export type ProfileScope = "extension" | "user" | "project";
+export interface ProfileReference {
+  name: string;
+  scope: ProfileScope;
+  path: string;
+  sha256: string;
+}
+export interface ProfileDiscoveryRequest {
+  version: 1;
+  parentSessionId: string;
+  /** Register an absolute directory synchronously during this event. */
+  addDirectory: (directory: string) => void;
+}
 
 export type RunState = "queued" | "running" | "cancelling" | "completed" | "failed" | "cancelled" | "timed_out" | "interrupted";
 export type ToolName = "read" | "grep" | "find" | "ls" | "edit" | "write" | "bash";
@@ -15,6 +30,7 @@ export interface RunSnapshot {
   workspace: string;
   tools: ToolName[];
   model: string;
+  profile?: ProfileReference;
   state: RunState;
   createdAt: number;
   startedAt?: number;

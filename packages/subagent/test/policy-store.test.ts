@@ -53,7 +53,9 @@ test("file artifacts are private, bounded, and atomically replaced", (t) => {
   const root = mkdtempSync(join(tmpdir(), "subagent-store-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const store = new FileRunStore(root, "parent");
-  const directory = store.create("run", "task");
+  const directory = store.create("run", "task", "Frozen profile instructions.");
+  assert.equal(readFileSync(join(directory, "instructions.txt"), "utf8"), "Frozen profile instructions.");
+  assert.equal(statSync(join(directory, "instructions.txt")).mode & 0o777, 0o600);
   assert.equal(statSync(directory).mode & 0o777, 0o700);
   assert.equal(statSync(join(directory, "task.txt")).mode & 0o777, 0o600);
   const snapshot: RunSnapshot = {

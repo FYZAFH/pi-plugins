@@ -14,6 +14,8 @@ test("packed plugin loads through Pi without sibling packages or local node_modu
   const packed = JSON.parse(execFileSync("npm", ["pack", "--ignore-scripts", "--json", "--pack-destination", root], { cwd: packageRoot, encoding: "utf8" }));
   const files: string[] = packed[0].files.map((file: { path: string }) => file.path);
   assert.ok(files.includes("src/index.ts"));
+  assert.ok(files.includes("src/profiles.ts"));
+  assert.ok(files.includes("docs/profiles.md"));
   assert.ok(files.includes("skills/subagent/SKILL.md"));
   assert.ok(!files.some((file) => file.startsWith("test/") || file.startsWith("node_modules/")));
   execFileSync("tar", ["-xf", join(root, packed[0].filename), "-C", root]);

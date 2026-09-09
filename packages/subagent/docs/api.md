@@ -1,10 +1,10 @@
-# Subagent API (0.1, experimental)
+# Subagent API (0.2, experimental)
 
 Tested against Pi 0.85.1 and Node 24.5.0. No sibling plugin is required.
 
 ## Tool
 
-`subagent` supports four actions. Invalid combinations fail as tool errors.
+`subagent` supports five actions. Invalid combinations fail as tool errors.
 
 ### Spawn
 
@@ -13,19 +13,29 @@ subagent({
   action: "spawn",
   task: "Inspect the provided scope and return a cited report.",
   label: "Inspect the scope",           // optional, up to 100 characters
+  profile: "security-reviewer",        // optional; must already exist
   cwd: "/absolute/path/to/project",     // optional, relative to parent cwd if relative
   tools: ["read"],                     // optional, available read/search tools by default
   timeoutMs: 600000                    // optional, 1..3600000 ms
 })
 ```
 
-A task must be non-empty and at most 32,000 characters. The child gets fresh history and no automatically discovered extensions, Skills, prompt templates, context files, or project settings. Include relevant instructions and evidence in the handoff. Prompt template expansion is disabled.
+A task must be non-empty and at most 32,000 characters. Optional `profile` supplies captured instructions and a tool ceiling, not a new executor or additional authority. Without it, direct delegation is unchanged. See [Agent Profiles](profiles.md). The child gets fresh history and no automatically discovered extensions, Skills, prompt templates, context files, or project settings. Include relevant instructions and evidence in the handoff. Prompt template expansion is disabled.
 
 The model and thinking level are captured from the parent at launch. Provider streaming is delegated to the host's public provider object; credentials are resolved through the host on demand, not copied to disk. There is no silent model fallback. Providers implementing the standard Pi interface are supported by this bridge; only an offline fixture provider has been tested so far. Parent provider-request hooks and other extension event hooks are **not** inherited.
 
 Supported tools: `read`, `grep`, `find`, `ls`, `edit`, `write`, `bash`. Only active native host built-ins may be selected. An extension overriding a built-in makes that name unavailable to this plugin, rather than being bypassed. Parent hook-based policies are not reproduced in child sessions; use a real sandbox when needed.
 
 In TUI mode, spawn returns an initial snapshot with a run ID. On completion, a custom message with the result is queued as a follow-up for the owning parent. In print, JSON, and RPC modes, spawn waits until the child settles and returns the final snapshot; a failed child makes that spawn tool call fail with its ID and artifact location. Those modes do not leave detached work behind or send duplicate completion messages.
+
+### Profiles
+
+```javascript
+subagent({ action: "profiles" })
+subagent({ action: "profiles", profile: "security-reviewer" })
+```
+
+List or inspect metadata and diagnostics without starting a run or loading every profile body into the parent conversation. Trusted project profiles override user profiles, which override extension contributions. Definitions are discovered on demand. Unknown/invalid names fail explicitly; no generic fallback is launched.
 
 ### Status
 
@@ -57,6 +67,7 @@ Cancellation is idempotent. Queued runs can settle immediately. Running work bec
 - `/subagents`: list runs.
 - `/subagents <run-id>`: inspect a run.
 - `/subagent-stop <run-id>`: request cancellation.
+- `/subagent-profiles [name]`: list or inspect profile metadata.
 
 These are text commands, not a dedicated panel.
 
@@ -75,13 +86,14 @@ Parent `edit`, `write`, `bash`, and `powershell` calls are conservatively blocke
 Artifacts are stored under `<Pi agent dir>/subagent-runs/runs-<owner hash>-<random>/` (normally `~/.pi/agent/subagent-runs/`). Each run has:
 
 - `task.txt`: original handoff.
+- `instructions.txt`: captured profile instructions, when a profile was selected. Its source identity/hash is recorded in `status.json`.
 - `status.json`: atomic snapshot with revision and lifecycle state.
 - `output.txt`: final or partial report, up to 256 KiB; overflow explicitly fails the run.
 - `events.jsonl`: finalized child messages, capped at approximately 1 MiB with an explicit truncation record.
 
 Directories are created with mode 0700 and files with mode 0600 on POSIX. Artifacts can contain source code, task data, and tool outputs; do not publish them automatically. Disk-write failures surface as execution failures rather than false success.
 
-A graceful shutdown cancels and drains runs, suppresses new parent notifications, and writes a closed-store marker. Closed stores older than seven days are pruned when a new store opens. Unclosed stores are retained for manual inspection, including after a crash. There is no automatic crash recovery, historical status import, or resume in 0.1. On-disk `running` after a crash is stale evidence, not proof of a live process. State is not reconstructed from the parent conversation tree.
+A graceful shutdown cancels and drains runs, suppresses new parent notifications, and writes a closed-store marker. Closed stores older than seven days are pruned when a new store opens. Unclosed stores are retained for manual inspection, including after a crash. There is no automatic crash recovery, historical status import, or resume in 0.2. On-disk `running` after a crash is stale evidence, not proof of a live process. State is not reconstructed from the parent conversation tree.
 
 `completed` describes runtime/report completion, not task acceptance. Inspect the report and validation yourself. Child token usage and cost are not yet aggregated into the parent footer; do not interpret parent totals as the total cost of delegation. The `interrupted` protocol state is reserved for future recovery; this version does not emit it.
 

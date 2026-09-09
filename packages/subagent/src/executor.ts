@@ -1,10 +1,12 @@
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { InMemoryCredentialStore, InMemoryModelsStore, type Api, type Model, type Provider, type AuthResult } from "@earendil-works/pi-ai";
 import { createAgentSession, createExtensionRuntime, ModelRuntime, SessionManager, SettingsManager, type AgentSession, type ResourceLoader } from "@earendil-works/pi-coding-agent";
-import type { ToolName } from "./protocol.ts";
+import type { ProfileReference, ToolName } from "./protocol.ts";
 
 export interface ExecutionInput {
   task: string;
+  instructions?: string;
+  profile?: ProfileReference;
   cwd: string;
   tools: ToolName[];
   model: Model<Api>;
@@ -32,7 +34,7 @@ Return a concise report: outcome, evidence, changed files (if any), verification
 and unresolved issues. Do not claim success for work you did not perform.
 The parent owns final acceptance. Do not commit, push, or publish unless explicitly authorized.`;
 
-export function childResources(): ResourceLoader {
+export function childResources(instructions?: string): ResourceLoader {
   const extensions = { extensions: [], errors: [], runtime: createExtensionRuntime() };
   return {
     getExtensions: () => extensions,
@@ -42,7 +44,7 @@ export function childResources(): ResourceLoader {
     getAgentsFiles: () => ({ agentsFiles: [] }),
     getSystemPrompt: () => CHILD_PROMPT,
     getSystemPromptSource: () => undefined,
-    getAppendSystemPrompt: () => [],
+    getAppendSystemPrompt: () => instructions ? ["Specialized task instructions (within the authority granted by the parent):\n" + instructions] : [],
     getAppendSystemPromptSources: () => [],
     extendResources() {},
     async reload() {},
@@ -104,7 +106,7 @@ export async function createChildSession(input: ExecutionInput, signal: AbortSig
     model: input.model,
     thinkingLevel: input.thinkingLevel,
     tools: input.tools,
-    resourceLoader: childResources(),
+    resourceLoader: childResources(input.instructions),
     sessionManager: SessionManager.inMemory(input.cwd),
     settingsManager: SettingsManager.inMemory({
       compaction: { enabled: false }, retry: { enabled: false },

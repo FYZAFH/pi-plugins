@@ -71,7 +71,8 @@ export class Supervisor {
     const snapshot: RunSnapshot = {
       version: 1, id, parentSessionId: this.parentSessionId, revision: 1,
       label, cwd: input.cwd, workspace, tools: [...input.tools], model: `${input.model.provider}/${input.model.id}`,
-      state: "queued", createdAt: Date.now(), artifactDir: this.options.store.create(id, input.task),
+      ...(input.profile ? { profile: structuredClone(input.profile) } : {}),
+      state: "queued", createdAt: Date.now(), artifactDir: this.options.store.create(id, input.task, input.instructions),
     };
     this.options.store.save(snapshot); // Launch is not accepted unless its initial record is saved.
     const run: Run = { snapshot, input, controller: new AbortController(), finished: deferred.promise, resolveFinished: deferred.resolve, timeoutMs };

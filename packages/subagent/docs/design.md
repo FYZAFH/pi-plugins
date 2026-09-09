@@ -2,6 +2,10 @@
 
 Status: original design baseline, now partially implemented in experimental 0.1. The [API reference](api.md) is the authoritative description of shipped behavior and limits. In particular, 0.1 does not implement crash recovery or historical status import; non-TUI spawn blocks instead of detaching.
 
+## 0.2 extension: optional profiles
+
+A profile loader now resolves user, trusted-project, and optionally contributed Markdown files into the existing execution input. It supplies captured instructions, a tool ceiling, and source identity; the executor does not discover files or contain role-specific branches. There are still no bundled roles, profile inheritance, or model-routing policies. See [Profile contract](profiles.md) for the current behavior; the initial interface proposal below is retained as design history.
+
 ## Purpose
 
 Delegate a bounded task to a generic child Pi session. The parent supplies the task and authority; the extension owns execution and observability. There is no role catalog, workflow language, planning system, or acceptance engine.

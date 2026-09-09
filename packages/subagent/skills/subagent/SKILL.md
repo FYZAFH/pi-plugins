@@ -22,6 +22,20 @@ subagent({
 
 Use only native tools active in the parent. Available names are `read`, `grep`, `find`, `ls`, `edit`, `write`, and `bash`; not every parent enables all of them. Omitted tools default to the available read/search subset. Grant mutation tools explicitly and only within user-authorized scope. `bash` is mutation-capable. Tool restrictions and cwd are not an OS sandbox; parent extension hooks are not inherited.
 
+## Optional profiles
+
+When a reusable specialist is requested, discover existing profiles instead of inventing a name:
+
+```javascript
+subagent({ action: "profiles" })
+subagent({ action: "profiles", profile: "security-reviewer" })
+subagent({ action: "spawn", profile: "security-reviewer", task: "Review src/auth for concrete authorization regressions. Cite evidence." })
+```
+
+The example name must exist first. Profiles provide instructions and a tool ceiling; the specific task is still required. Omitted tools use the profile's list. Explicit tools may narrow it but must not widen it or exceed the host's active native tools. An invalid profile is an error, not permission to fall back silently to a generic child.
+
+Profiles are optional Markdown files under the user's `subagent-profiles/` directory, a trusted parent project's `.pi/subagent-profiles/`, or directories contributed by installed plugins. None are bundled. They do not inherit conversation history or select models. See [Profile authoring](../../docs/profiles.md) when asked to create one; write its instructions in English. Do not create persistent profiles for every one-off task.
+
 ## Composition and control
 
 Independent tasks can use separate spawn calls. Consume prerequisite results before assigning dependent work. Use a few distinct tasks rather than overlapping agents.
