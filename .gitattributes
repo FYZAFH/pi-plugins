@@ -1,0 +1,2 @@
+# Patch context lines intentionally prefix upstream tabs/blank lines with a space.
+patches/pi-subagents/*.patch -whitespace

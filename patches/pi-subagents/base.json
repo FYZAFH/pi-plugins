@@ -1,0 +1,20 @@
+{
+  "upstream": "https://github.com/nicobailon/pi-subagents.git",
+  "version": "0.67.0",
+  "tag": "v0.67.0",
+  "baseCommit": "aa75b3353836f7868898e3bd58234d21eaff1463",
+  "tagObject": "910a76278e67dd721dd50b76a241193efdfeb59b",
+  "patch": "unified-drawer.patch",
+  "patchSha256": "f22f247fd8c86a872d44fba278de3c2c5f16a5887a8ebc96842c7385290fb8c4",
+  "submodulePath": "vendor/pi-subagents",
+  "customizationStorage": "uncommitted working-tree changes plus parent-owned reproducible patch; no custom gitlink commit or remote fork",
+  "testedHost": "@earendil-works/pi-coding-agent 0.85.1",
+  "activeSource": "npm:pi-subagents@0.67.0",
+  "activationBlockedBy": "unchanged upstream owned-process-tree.test.ts:90: kill EPERM",
+  "files": [
+    "index.ts",
+    "src/slash/slash-commands.ts",
+    "src/slash/unified-drawer.ts",
+    "test/unit/unified-drawer.test.ts"
+  ]
+}

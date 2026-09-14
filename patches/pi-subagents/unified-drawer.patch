@@ -1,0 +1,396 @@
+diff --git a/index.ts b/index.ts
+index 1ffb1b06..c343b8d0 100644
+--- a/index.ts
++++ b/index.ts
+@@ -5,6 +5,10 @@ const registerParentExtension = process.env.PI_SUBAGENT_CHILD === "1"
+ 	? undefined
+ 	: (await import("./src/extension/index.ts")).default;
+ 
++const registerUnifiedDrawer = registerParentExtension
++	? (await import("./src/slash/unified-drawer.ts")).registerUnifiedDrawer
++	: undefined;
++
+ export default function registerSubagentExtension(pi: ExtensionAPI): void {
+-	registerParentExtension?.(pi);
++	if (registerParentExtension) registerUnifiedDrawer!(pi, registerParentExtension);
+ }
+diff --git a/src/slash/slash-commands.ts b/src/slash/slash-commands.ts
+index 7827a628..7d540ffe 100644
+--- a/src/slash/slash-commands.ts
++++ b/src/slash/slash-commands.ts
+@@ -754,7 +754,7 @@ function persistSlashSessionSnapshot(ctx: ExtensionContext): void {
+ 	}
+ }
+ 
+-async function runSlashSubagent(
++export async function runSlashSubagent(
+ 	pi: ExtensionAPI,
+ 	ctx: ExtensionContext,
+ 	params: SubagentParamsLike,
+diff --git a/src/slash/unified-drawer.ts b/src/slash/unified-drawer.ts
+new file mode 100644
+index 00000000..36c7efc3
+--- /dev/null
++++ b/src/slash/unified-drawer.ts
+@@ -0,0 +1,238 @@
++import * as fs from "node:fs";
++import * as path from "node:path";
++import { fileURLToPath } from "node:url";
++import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
++import { SelectList, truncateToWidth, type AutocompleteProvider, type KeybindingsManager } from "@earendil-works/pi-tui";
++import { getAgentDir } from "../shared/utils.ts";
++import { sanitizeDisplayText } from "../shared/display-text.ts";
++import { FLEET_OPEN_SHORTCUT } from "../shared/shortcuts.ts";
++import { runSlashSubagent } from "./slash-commands.ts";
++import { discoverPromptWorkflows } from "./prompt-workflows.ts";
++import type { SubagentParamsLike } from "../runs/foreground/subagent-executor.ts";
++
++type Command = Parameters<ExtensionAPI["registerCommand"]>[1];
++export type DrawerCategory = "Runs" | "Agents" | "Workflows" | "More";
++export const DRAWER_CATEGORIES: DrawerCategory[] = ["Runs", "Agents", "Workflows", "More"];
++
++/** Global presentation preference only; never a resource or execution policy. */
++export function readCommandMode(): "compact" | "full" {
++	const file = path.join(getAgentDir(), "settings.json");
++	try {
++		const mode = JSON.parse(fs.readFileSync(file, "utf8"))?.subagents?.commandMode;
++		if (mode === undefined || mode === "full") return "full";
++		if (mode === "compact") return "compact";
++		throw new Error('subagents.commandMode must be "compact" or "full"');
++	} catch (error) {
++		if ((error as NodeJS.ErrnoException).code === "ENOENT") return "full";
++		throw error;
++	}
++}
++
++/** Wrap, rather than compete with, the host's complete provider. */
++export function compactAutocomplete(current: AutocompleteProvider, hidden: () => ReadonlySet<string>): AutocompleteProvider {
++	return {
++		triggerCharacters: current.triggerCharacters,
++		async getSuggestions(lines, line, col, options) {
++			const result = await current.getSuggestions(lines, line, col, options);
++			const before = (lines[line] ?? "").slice(0, col);
++			if (!result || options.force || !/^\/[^\s/]*$/.test(before)) return result;
++			const excluded = hidden();
++			const items = result.items.filter((item) => !excluded.has(item.value));
++			return items.length ? { ...result, items } : null;
++		},
++		applyCompletion: (...args) => current.applyCompletion(...args),
++		shouldTriggerFileCompletion: (...args) => current.shouldTriggerFileCompletion?.(...args) ?? true,
++	};
++}
++
++/** No input editor, subscriptions, timers, or cached theme strings. */
++export class DrawerMenu {
++	private selected = 0;
++	private title: string;
++	private items: readonly string[];
++	private theme: () => Theme;
++	private keys: KeybindingsManager;
++	private height: () => number;
++	private done: (value: string | undefined) => void;
++	constructor(title: string, items: readonly string[], theme: () => Theme, keys: KeybindingsManager, height: () => number, done: (value: string | undefined) => void) {
++		this.title = title; this.items = items; this.theme = theme; this.keys = keys; this.height = height; this.done = done;
++	}
++	handleInput(data: string): void {
++		if (this.keys.matches(data, "tui.select.cancel")) this.done(undefined);
++		else if (this.keys.matches(data, "tui.select.confirm")) this.done(this.items[this.selected]);
++		else if (this.keys.matches(data, "tui.select.up")) this.selected = Math.max(0, this.selected - 1);
++		else if (this.keys.matches(data, "tui.select.down")) this.selected = Math.min(this.items.length - 1, this.selected + 1);
++	}
++	render(width: number): string[] {
++		if (width <= 0) return [];
++		const theme = this.theme();
++		const rows = Math.max(1, this.height());
++		const list = new SelectList(this.items.map((label) => ({ value: label, label: sanitizeDisplayText(label) })), Math.max(1, rows - 3), {
++			selectedPrefix: (s) => theme.fg("accent", s), selectedText: (s) => theme.fg("accent", s),
++			description: (s) => theme.fg("muted", s), scrollInfo: (s) => theme.fg("dim", s), noMatch: (s) => theme.fg("warning", s),
++		});
++		list.setSelectedIndex(this.selected);
++		const body = list.render(Math.max(8, width));
++		const lines = rows < 4 ? body : [theme.fg("accent", sanitizeDisplayText(this.title)), ...body, theme.fg("dim", "Up/Down: select · Enter: open · Esc: back/close")];
++		return lines.slice(0, rows).map((line) => truncateToWidth(line, width, ""));
++	}
++	invalidate(): void {}
++}
++
++export interface DrawerActions {
++	command(name: string, args: string, ctx: ExtensionContext): Promise<void>;
++	manage(params: SubagentParamsLike, ctx: ExtensionContext, signal: AbortSignal): Promise<void>;
++	workflowNames(ctx: ExtensionContext): string[];
++}
++
++export const CATEGORY_ACTIONS: Record<DrawerCategory, readonly string[]> = {
++	Runs: ["Fleet", "Run an agent…", "Stop…", "Steer…", "Detach…", "Costs"],
++	Agents: ["Browse / edit agents", "Create agent…"],
++	Workflows: ["List prompt workflows", "Run prompt workflow…", "Workflow help"],
++	More: ["Schedules…", "Missions…", "Diagnostics", "Settings…", "Help", "Other commands…"],
++};
++
++export async function drawerAction(label: string, ctx: ExtensionContext, actions: DrawerActions, signal: AbortSignal): Promise<void> {
++	const command = async (name: string, args = "") => {
++		if (!signal.aborted) await actions.command(name, args, ctx);
++	};
++	const inputCommand = async (name: string, title: string, placeholder: string) => {
++		const args = await ctx.ui.input(title, placeholder, { signal });
++		if (args?.trim() && !signal.aborted) await command(name, args);
++	};
++	const guided = async (title: string, params: SubagentParamsLike) => {
++		const text = await ctx.ui.editor(title, JSON.stringify(params, null, 2));
++		if (!text?.trim() || signal.aborted) return;
++		const value = JSON.parse(text) as SubagentParamsLike;
++		// This form cannot silently switch to a different action or launch a workflow.
++		if (!value || typeof value !== "object" || value.action !== params.action || (params.action !== "schedule.create" && ("workflowScript" in value || "workflowScriptPath" in value))) throw new Error("Keep the selected management action; use Runs / Workflows to launch work.");
++		if (!await ctx.ui.confirm(title, "Apply this management request using the original validation and policy?", { signal }) || signal.aborted) return;
++		await actions.manage(value, ctx, signal);
++	};
++	switch (label) {
++		case "Fleet": return command("subagents-fleet");
++		case "Browse / edit agents": return command("subagents");
++		case "Create agent…": return guided("Create agent (JSON; original validation)", { action: "create", config: { name: "", description: "", systemPrompt: "", scope: "user", inheritSkills: false } });
++		case "Run an agent…": return inputCommand("run", "Run an agent (launches work)", "<agent> <task> [--bg] [--fork]");
++		case "Stop…": return command("subagents-stop");
++		case "Steer…": return inputCommand("subagents-steer", "Steer a run", "<id> <message>");
++		case "Detach…": return inputCommand("subagents-detach", "Detach a foreground run", "<id>");
++		case "Costs": return command("subagent-cost");
++		case "List prompt workflows":
++		case "Run prompt workflow…": {
++			const names = actions.workflowNames(ctx);
++			if (!names.length) { ctx.ui.notify("No configured prompt workflows. Packaged templates remain on disk; enable selected prompts in Pi settings to use them here.", "info"); return; }
++			const name = await ctx.ui.select(label === "List prompt workflows" ? "Configured prompt workflows (read-only)" : "Choose a prompt workflow (launches work after input)", names, { signal });
++			if (label === "List prompt workflows" || !name || !names.includes(name) || signal.aborted) return;
++			const args = await ctx.ui.input(`Run ${sanitizeDisplayText(name)}: arguments`, "Empty is allowed; Escape cancels", { signal });
++			if (args !== undefined && !signal.aborted) await command("prompt-workflow", `${JSON.stringify(name)} ${args}`);
++			return;
++		}
++		case "Workflow help": return command("subagents-guide", "workflows");
++		case "Diagnostics": return command("subagents-doctor");
++		case "Help": return command("subagents-guide");
++		case "Schedules…":
++		case "Missions…": {
++			const prefix = label === "Schedules…" ? "schedule" : "mission";
++			const choices = prefix === "schedule" ? ["list", "show", "history", "create", "pause", "resume", "run", "delete"] : ["list", "show", "create", "update", "resolve-decision", "attach-run", "close"];
++			const action = await ctx.ui.select(`${prefix}: choose an existing action`, choices, { signal });
++			if (!action || !choices.includes(action) || signal.aborted) return;
++			if (action === "list") return actions.manage({ action: `${prefix}.list` }, ctx, signal);
++			const fields = prefix === "schedule"
++				? (action === "create" ? { id: "", every: "6h", workflowScriptPath: "" } : { id: "" })
++				: (action === "create" ? { mission: { title: "", objective: "" } } : { missionId: "" });
++			return guided(`${prefix}.${action} (JSON; see packaged guide for fields)`, { action: `${prefix}.${action}`, ...fields });
++		}
++		case "Settings…": {
++			const selected = await ctx.ui.select("Settings (original controls)", ["Models", "Profiles", "Watchdog status", "Command mode help"], { signal });
++			if (signal.aborted) return;
++			if (selected === "Models") return command("subagents-models");
++			if (selected === "Profiles") return command("subagents-profiles");
++			if (selected === "Watchdog status") return command("subagents-watchdog", "status");
++			if (selected === "Command mode help") ctx.ui.notify('Set subagents.commandMode to "compact" or "full" in global settings.json, then restart Pi. Resource filters are independent.', "info");
++			return;
++		}
++	}
++}
++
++/** Capture original handlers without replacing tools, events, or execution authority. */
++export function registerUnifiedDrawer(pi: ExtensionAPI, register: (api: ExtensionAPI) => void, mode = readCommandMode()): void {
++	const commands = new Map<string, Command>();
++	let controller: AbortController | undefined;
++	let closeMenu: (() => void) | undefined;
++	let disposed = false;
++	const actions: DrawerActions = {
++		async command(name, args, ctx) {
++			const original = commands.get(name);
++			if (!original) throw new Error(`Command unavailable: ${name}`);
++			// Audited upstream handlers use ExtensionContext only, including from the shortcut.
++			await original.handler(args, ctx as ExtensionCommandContext);
++		},
++		manage: (params, ctx, signal) => runSlashSubagent(pi, ctx, params, signal),
++		workflowNames: (ctx) => {
++			const enabled = new Set(pi.getCommands().filter((cmd) => cmd.source === "prompt").map((cmd) => path.resolve(cmd.sourceInfo.path)));
++			return discoverPromptWorkflows(ctx.cwd).filter((workflow) => enabled.has(path.resolve(workflow.filePath))).map((workflow) => workflow.name);
++		},
++	};
++	const menu = (ctx: ExtensionContext, title: string, items: readonly string[]) => ctx.ui.custom<string | undefined>((tui, _theme, keys, done) => {
++		closeMenu = () => done(undefined);
++		const component = new DrawerMenu(title, items, () => ctx.ui.theme, keys, () => Math.max(1, tui.terminal.rows - 2), done);
++		return { render: (w) => component.render(w), invalidate: () => component.invalidate(), handleInput: (data) => { component.handleInput(data); tui.requestRender(); }, dispose: () => { closeMenu = undefined; } };
++	}, { overlay: true, overlayOptions: { anchor: "right-center", width: "80%", maxHeight: "100%", margin: 1 } });
++	const open = async (ctx: ExtensionContext) => {
++		if (disposed || controller || ctx.mode !== "tui") return;
++		const active = new AbortController();
++		controller = active;
++		try {
++			// Default Runs surface is the original Fleet, not a duplicate status engine.
++			await actions.command("subagents-fleet", "", ctx);
++			while (!active.signal.aborted) {
++				const category = await menu(ctx, "Subagents", DRAWER_CATEGORIES) as DrawerCategory | undefined;
++				if (!category || active.signal.aborted) break;
++				while (!active.signal.aborted) {
++					const label = await menu(ctx, `Subagents / ${category}`, CATEGORY_ACTIONS[category]);
++					if (!label || active.signal.aborted) break;
++					try {
++						if (label === "Other commands…") {
++							const names = [...commands.keys()].filter((name) => name !== "subagents-inspect-rpc");
++							const name = await ctx.ui.select("Original commands (may mutate or launch work)", names, { signal: active.signal });
++							if (!name || !names.includes(name) || active.signal.aborted) continue;
++							const args = await ctx.ui.input(sanitizeDisplayText(commands.get(name)?.description ?? name), "Arguments (empty is allowed)", { signal: active.signal });
++							if (args !== undefined && !active.signal.aborted) await actions.command(name, args, ctx);
++						} else await drawerAction(label, ctx, actions, active.signal);
++					} catch (error) {
++						if (!active.signal.aborted) ctx.ui.notify(sanitizeDisplayText(String(error)), "error");
++					}
++				}
++			}
++		} finally {
++			active.abort();
++			closeMenu?.();
++			controller = undefined;
++		}
++	};
++	const wrapped: ExtensionAPI = {
++		...pi,
++		registerCommand(name, definition) {
++			commands.set(name, definition);
++			pi.registerCommand(name, mode === "compact" && name === "subagents" ? { ...definition, description: "Open unified subagents drawer (Runs / Agents / Workflows / More)", handler: (args, ctx) => ctx.mode === "tui" && !args.trim() ? open(ctx) : definition.handler(args, ctx) } : definition);
++		},
++		registerShortcut(key, definition) {
++			pi.registerShortcut(key, mode === "compact" && key === FLEET_OPEN_SHORTCUT ? { description: "Open unified subagents drawer", handler: open } : definition);
++		},
++	};
++	register(wrapped);
++	if (mode === "full") return;
++	pi.on("session_start", (_event, ctx) => {
++		if (ctx.mode !== "tui") return;
++		// Provenance, not a name prefix: keep another extension's suffixed aliases.
++		const ownPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../index.ts");
++		ctx.ui.addAutocompleteProvider((current) => compactAutocomplete(current, () => new Set(pi.getCommands().filter((cmd) => cmd.source === "extension" && path.resolve(cmd.sourceInfo.path) === ownPath && commands.has(cmd.name.replace(/:\d+$/, "")) && cmd.name.replace(/:\d+$/, "") !== "subagents").map((cmd) => cmd.name))));
++	});
++	pi.on("session_shutdown", () => {
++		disposed = true;
++		controller?.abort();
++		closeMenu?.();
++		closeMenu = undefined;
++	});
++}
+diff --git a/test/unit/unified-drawer.test.ts b/test/unit/unified-drawer.test.ts
+new file mode 100644
+index 00000000..c93802b4
+--- /dev/null
++++ b/test/unit/unified-drawer.test.ts
+@@ -0,0 +1,117 @@
++import assert from "node:assert/strict";
++import { test } from "node:test";
++import * as fs from "node:fs";
++import * as os from "node:os";
++import * as path from "node:path";
++import { fileURLToPath } from "node:url";
++import { CombinedAutocompleteProvider, KeybindingsManager, TUI_KEYBINDINGS, visibleWidth } from "@earendil-works/pi-tui";
++import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
++import { compactAutocomplete, DrawerMenu, drawerAction, registerUnifiedDrawer, readCommandMode, CATEGORY_ACTIONS } from "../../src/slash/unified-drawer.ts";
++import registerParent from "../../src/extension/index.ts";
++
++const ownPath = fileURLToPath(new URL("../../index.ts", import.meta.url));
++function host() {
++ const commands = new Map<string, any>(); const tools = new Map<string, any>(); const shortcuts = new Map<string, any>(); const events = new Map<string, Function[]>();
++ const noop = () => {};
++ const api = {
++  registerCommand: (name: string, value: any) => commands.set(name, value), registerTool: (value: any) => tools.set(value.name, value), registerShortcut: (name: string, value: any) => shortcuts.set(name, value),
++  on: (name: string, value: Function) => events.set(name, [...(events.get(name) ?? []), value]), events: { on: () => noop, emit: noop }, registerMessageRenderer: noop, registerEntryRenderer: noop,
++  getActiveTools: () => [], getAllTools: () => [], getCommands: () => [...commands.keys()].map((name) => ({ name, source: "extension", sourceInfo: { path: ownPath } })),
++ } as unknown as ExtensionAPI;
++ return { api, commands, tools, shortcuts, events };
++}
++const theme = { fg: (_color: string, text: string) => text } as Theme;
++const keys = new KeybindingsManager(TUI_KEYBINDINGS);
++
++test("full and compact register all 19 upstream commands and identical model schemas", () => {
++ const full = host(); const compact = host(); const child = process.env.PI_SUBAGENT_CHILD;
++ delete process.env.PI_SUBAGENT_CHILD;
++ try { registerUnifiedDrawer(full.api, registerParent, "full"); registerUnifiedDrawer(compact.api, registerParent, "compact"); }
++ finally { if (child !== undefined) process.env.PI_SUBAGENT_CHILD = child; }
++ const inventory = ["subagents", "run", "subagent-cost", "subagents-doctor", "subagents-inspect-rpc", "subagents-guide", "subagents-refine", "subagents-fleet", "subagents-detach", "subagents-stop", "subagents-steer", "prompt-workflow", "subagents-models", "subagents-profiles", "subagents-load-profile", "subagents-refresh-provider-models", "subagents-generate-profiles", "subagents-check-profile", "subagents-watchdog"].sort();
++ assert.deepEqual([...full.commands.keys()].sort(), inventory); assert.deepEqual([...compact.commands.keys()].sort(), inventory);
++ assert.deepEqual([...compact.tools.keys()], [...full.tools.keys()]);
++ for (const [name, tool] of full.tools) { assert.deepEqual(compact.tools.get(name).parameters, tool.parameters, name); assert.equal(compact.tools.get(name).description, tool.description, name); }
++});
++
++test("real base autocomplete is filtered, not supplemented; unrelated commands, arguments, skills and paths survive", async () => {
++ const base = new CombinedAutocompleteProvider([{ name: "subagents" }, { name: "subagents-fleet" }, { name: "subagents-inspect-rpc" }, { name: "sub-other" }, { name: "run", getArgumentCompletions: () => [{ value: "existing-agent" }] }, { name: "skill:pi-subagents" }], process.cwd());
++ const provider = compactAutocomplete(base, () => new Set(["subagents-fleet", "subagents-inspect-rpc", "run"]));
++ for (const prefix of ["/", "/sub"]) {
++  const result = await provider.getSuggestions([prefix], 0, prefix.length, {});
++  assert(result?.items.some((i) => i.value === "subagents")); assert(result?.items.some((i) => i.value === "sub-other"));
++  assert(!result?.items.some((i) => ["run", "subagents-fleet", "subagents-inspect-rpc"].includes(i.value)));
++ }
++ assert((await provider.getSuggestions(["/"],0,1,{}))?.items.some(i=>i.value==='skill:pi-subagents'));
++ for (const text of ["/run ", "./"]) assert.deepEqual(await provider.getSuggestions([text], 0, text.length, {}), await base.getSuggestions([text], 0, text.length, {}));
++ assert.deepEqual(provider.applyCompletion(["/sub"],0,4,{value:"subagents"},"/sub"),base.applyCompletion(["/sub"],0,4,{value:"subagents"},"/sub"));
++});
++
++test("TUI-only provenance filter preserves another extension's same-name alias", async () => {
++ const h = host(); registerUnifiedDrawer(h.api, api => { api.registerCommand('subagents',{handler:async()=>{}}); api.registerCommand('run',{handler:async()=>{}}); },'compact');
++ h.api.getCommands = () => [{name:'run:1',source:'extension',sourceInfo:{path:ownPath}},{name:'run:2',source:'extension',sourceInfo:{path:'/other/index.ts'}}] as any;
++ let wrapper: any; const ctx = {mode:'tui',ui:{addAutocompleteProvider:(w:any)=>{wrapper=w;}}};
++ for(const mode of ['rpc','print','json']) { h.events.get('session_start')![0]!({}, {...ctx,mode}); assert.equal(wrapper,undefined); }
++ h.events.get('session_start')![0]!({},ctx);
++ const result = await wrapper(new CombinedAutocompleteProvider([{name:'run:1'},{name:'run:2'}],process.cwd())).getSuggestions(['/'],0,1,{});
++ assert.deepEqual(result.items.map((i:any)=>i.value),['run:2']);
++});
++
++test("bounded theme/control-safe render, resize, keyboard focus and back", () => {
++ let result: string|undefined = 'pending'; let height=24; let color='';
++ const menu = new DrawerMenu('Danger\x1b]52;c;bad\x07 title',['Runs','Agents','界'.repeat(50)],()=>({fg:(_:string,s:string)=>color+s+(color?'\x1b[0m':'')}) as Theme,keys,()=>height,v=>{result=v;});
++ for(const w of [0,1,2,7,20,80,200]) for(const rows of [1,2,3,24]) {height=rows; const lines=menu.render(w);assert(lines.length<=rows); assert(lines.every(line=>visibleWidth(line)<=w&&!line.includes(']52;')));}
++ height=24;color='\x1b[31m';menu.invalidate();assert(menu.render(80)[0]!.includes(color));
++ menu.handleInput('\x1b[B');menu.handleInput('\r');assert.equal(result,'Agents');menu.handleInput('\x1b');assert.equal(result,undefined);
++});
++
++function actionFixture() {
++ const calls:any[]=[];
++ const actions={workflowNames:()=>[] as string[],command:async(...args:any[])=>{calls.push(args.slice(0,2));},manage:async(...args:any[])=>{calls.push(args[0]);}};
++ const ctx={ui:{input:async()=>undefined,editor:async()=>undefined,select:async()=>undefined,confirm:async()=>false,notify:()=>{}}} as unknown as ExtensionContext;
++ return {calls,actions,ctx};
++}
++
++test("read-only navigation uses original views; absent workflows and cancelled forms execute nothing", async()=>{
++ const {calls,actions,ctx}=actionFixture();
++ for(const label of ['Fleet','Browse / edit agents','Costs','List prompt workflows','Workflow help','Help']) await drawerAction(label,ctx,actions,new AbortController().signal);
++ assert.deepEqual(calls.map(c=>c[0]),['subagents-fleet','subagents','subagent-cost','subagents-guide','subagents-guide']);calls.length=0;
++ for(const label of Object.values(CATEGORY_ACTIONS).flat().filter(l=>l.endsWith('…')&&l!=='Stop…')) await drawerAction(label,ctx,actions,new AbortController().signal);
++ assert.deepEqual(calls,[]);
++ ctx.ui.editor=async()=>'{"action":"schedule.run"}';await assert.rejects(drawerAction('Create agent…',ctx,actions,new AbortController().signal),/selected management action/);
++ ctx.ui.editor=async()=>'{"action":"create","config":{"name":"custom"}}';await drawerAction('Create agent…',ctx,actions,new AbortController().signal);assert.deepEqual(calls,[]);
++ ctx.ui.confirm=async()=>true;await drawerAction('Create agent…',ctx,actions,new AbortController().signal);assert.equal(calls[0].action,'create');
++});
++
++test("schedule/mission guided actions retain selected action, confirm mutations and honor cancellation",async()=>{
++ const {calls,actions,ctx}=actionFixture();const controller=new AbortController();
++ ctx.ui.select=async()=> 'list';await drawerAction('Schedules…',ctx,actions,controller.signal);await drawerAction('Missions…',ctx,actions,controller.signal);
++ assert.deepEqual(calls,[{action:'schedule.list'},{action:'mission.list'}]);calls.length=0;
++ ctx.ui.select=async()=> 'create';ctx.ui.editor=async(_title,prefill)=>prefill;ctx.ui.confirm=async()=>true;
++ await drawerAction('Schedules…',ctx,actions,controller.signal);assert.equal(calls[0].action,'schedule.create');assert.equal(calls[0].every,'6h');
++ await drawerAction('Missions…',ctx,actions,controller.signal);assert.deepEqual(calls[1].mission,{title:'',objective:''});
++ controller.abort();calls.length=0;await drawerAction('Schedules…',ctx,actions,controller.signal);assert.deepEqual(calls,[]);
++});
++
++test("default Fleet then categories/back/close; headless original admin and shutdown cleanup",async()=>{
++ const h=host();const calls:string[]=[];const choices=['Agents','Browse / edit agents',undefined,undefined];
++ registerUnifiedDrawer(h.api,api=>{api.registerCommand('subagents',{handler:async()=>{calls.push('admin');}});api.registerCommand('subagents-fleet',{handler:async()=>{calls.push('fleet');}});api.registerShortcut('ctrl+alt+f',{handler:async()=>{}});},'compact');
++ const ctx={mode:'tui',ui:{custom:async()=>choices.shift(),notify:()=>{}}};
++ await h.commands.get('subagents').handler('',ctx);assert.deepEqual(calls,['fleet','admin']);
++ for(const mode of ['rpc','print','json'])await h.commands.get('subagents').handler('',{...ctx,mode});assert.equal(calls.filter(c=>c==='admin').length,4);
++ let disposed=0;ctx.ui.custom=((factory:any)=>new Promise(resolve=>{let component:any;component=factory({terminal:{rows:20},requestRender(){}},theme,keys,(v:any)=>{component.dispose();disposed++;resolve(v);});})) as any;
++ const open=h.shortcuts.get('ctrl+alt+f').handler(ctx);await new Promise(r=>setImmediate(r));for(const shutdown of h.events.get('session_shutdown')!)shutdown({});await open;assert.equal(disposed,1);
++});
++
++test("action errors are sanitized and return to category, without model calls",async()=>{
++ const h=host();const choices=['Agents','Browse / edit agents',undefined,undefined];const errors:string[]=[];
++ registerUnifiedDrawer(h.api,api=>{api.registerCommand('subagents',{handler:async()=>{throw new Error('bad\x1b]52;c;payload\x07');}});api.registerCommand('subagents-fleet',{handler:async()=>{}});},'compact');
++ await h.commands.get('subagents').handler('',{mode:'tui',ui:{custom:async()=>choices.shift(),notify:(text:string)=>errors.push(text)}});
++ assert.equal(errors.length,1);assert(!errors[0]!.includes(']52;'));
++});
++
++test("mode defaults full, validates input and does not rewrite settings",()=>{
++ const previous=process.env.PI_CODING_AGENT_DIR;const root=fs.mkdtempSync(path.join(os.tmpdir(),'drawer-settings-'));process.env.PI_CODING_AGENT_DIR=root;
++ try{assert.equal(readCommandMode(),'full');fs.writeFileSync(path.join(root,'settings.json'),'{"subagents":{"commandMode":"compact","disableBuiltins":true}}');assert.equal(readCommandMode(),'compact');fs.writeFileSync(path.join(root,'settings.json'),'{"subagents":{"commandMode":"typo"}}');assert.throws(readCommandMode,/commandMode/);}
++ finally{if(previous===undefined)delete process.env.PI_CODING_AGENT_DIR;else process.env.PI_CODING_AGENT_DIR=previous;fs.rmSync(root,{recursive:true,force:true});}
++});

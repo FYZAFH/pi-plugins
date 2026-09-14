@@ -1,0 +1,3 @@
+[submodule "vendor/pi-subagents"]
+	path = vendor/pi-subagents
+	url = https://github.com/nicobailon/pi-subagents.git
